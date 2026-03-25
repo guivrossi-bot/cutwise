@@ -1,66 +1,51 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+'use client'
+import { useState } from 'react'
+import Hero from './components/Hero'
+import Wizard from './components/Wizard'
+import Report from './components/CutReport'
 
 export default function Home() {
+  const [screen, setScreen] = useState('hero')
+  const [answers, setAnswers] = useState({})
+  const [units, setUnits] = useState('metric')
+
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.js file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <nav style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 24px', height: '52px',
+        borderBottom: '1px solid #e8e8e8', background: '#fff',
+        position: 'sticky', top: 0, zIndex: 10
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.3px' }}>
+          cut<span style={{ color: '#378ADD' }}>wise</span>
         </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', background: '#f5f5f5', borderRadius: 20, border: '1px solid #e0e0e0', overflow: 'hidden' }}>
+            {['imperial', 'metric'].map(u => (
+              <button key={u} onClick={() => setUnits(u)} style={{
+                padding: '4px 12px', fontSize: 11, fontWeight: 500,
+                background: units === u ? '#fff' : 'transparent',
+                color: units === u ? '#1a1a1a' : '#888',
+                borderRadius: 20, border: 'none',
+                boxShadow: units === u ? '0 0 0 1px #e0e0e0' : 'none'
+              }}>
+                {u === 'imperial' ? 'in / lb' : 'mm / kg'}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setScreen('wizard')} style={{
+            padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 500,
+            background: '#E6F1FB', border: '1px solid #85B7EB', color: '#0C447C'
+          }}>
+            Start analysis
+          </button>
         </div>
-      </main>
+      </nav>
+
+      {screen === 'hero' && <Hero onStart={() => setScreen('wizard')} onSample={() => setScreen('report')} />}
+      {screen === 'wizard' && <Wizard units={units} onComplete={(a) => { setAnswers(a); setScreen('report') }} />}
+      {screen === 'report' && <Report answers={answers} units={units} onRestart={() => { setAnswers({}); setScreen('wizard') }} />}
     </div>
-  );
+  )
 }
