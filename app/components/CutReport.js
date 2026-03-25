@@ -2,34 +2,81 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-const NAMES = { laser: 'Fiber laser', waterjet: 'Waterjet', plasma: 'Plasma', oxyfuel: 'Oxyfuel' }
-const COLORS = { laser: '#378ADD', waterjet: '#1D9E75', plasma: '#EF9F27', oxyfuel: '#D85A30' }
+const TECHS = {
+  plasma_conv:  { label: 'Plasma (Conventional)', short: 'Plasma Conv.', color: '#EF9F27' },
+  plasma_hidef: { label: 'Plasma (High Definition)', short: 'Plasma HiDef', color: '#BA7517' },
+  laser_low:    { label: 'Laser (Low End)', short: 'Laser Low', color: '#85B7EB' },
+  laser_high:   { label: 'Laser (High End)', short: 'Laser High', color: '#185FA5' },
+  waterjet:     { label: 'Waterjet', short: 'Waterjet', color: '#1D9E75' },
+  oxyfuel:      { label: 'Oxyfuel', short: 'Oxyfuel', color: '#D85A30' },
+}
+
+const SPECIALTY_MATERIALS = ['Copper', 'Titanium', 'Other']
+const THICKNESS_CAPS = {
+  plasma_conv: 50, plasma_hidef: 80,
+  laser_low: 25, laser_high: 40,
+  waterjet: 300, oxyfuel: 400,
+}
+
+function isTechAvailable(key, answers) {
+  const mat = answers.material || ''
+  const t = parseFloat(answers.thickness) || 0
+  if (key === 'oxyfuel' && !mat.includes('Mild steel')) return { available: false, reason: 'Mild steel only' }
+  if (t > 0 && t > THICKNESS_CAPS[key]) return { available: false, reason: `Max ${THICKNESS_CAPS[key]}mm` }
+  return { available: true }
+}
 
 function scoreReport(answers) {
   const t = parseFloat(answers.thickness) || 8
   const lr = parseFloat(answers.labor_rate) || 35
-  const mult = (t > 30 ? 2.2 : t > 15 ? 1.5 : 1) * (lr > 50 ? 1.3 : lr < 20 ? 0.8 : 1)
+  const mult = (t > 50 ? 3.5 : t > 30 ? 2.2 : t > 15 ? 1.5 : 1) * (lr > 50 ? 1.3 : lr < 20 ? 0.8 : 1)
   const mat = answers.material || ''
-  const noOxy = ['Aluminum', 'Stainless', 'Copper', 'Titanium'].some(m => mat.includes(m))
+  const isSpecialty = SPECIALTY_MATERIALS.some(m => mat.includes(m))
   const fin = answers.finish || '', tol = answers.tolerance || ''
   const haz = answers.haz || '', pri = answers.priority || ''
 
-  let scores = { laser: 75, waterjet: 58, plasma: 65, oxyfuel: noOxy ? 0 : 50 }
-  if (fin.includes('Fine')) { scores.laser += 10; scores.waterjet += 8; scores.plasma -= 20; scores.oxyfuel -= 30 }
-  if (tol.includes('0.1') || tol.includes('0.05')) { scores.laser += 10; scores.waterjet += 8; scores.plasma -= 15; scores.oxyfuel -= 25 }
-  if (haz?.includes('Very')) { scores.waterjet += 15; scores.laser -= 10 }
-  if (pri?.includes('Lowest')) { scores.plasma += 15; scores.laser -= 5; scores.oxyfuel += 20 }
-  if (t > 50 && !noOxy) scores.oxyfuel += 15
-
-  const costs = {
-    laser:    { total: (3.2 * mult).toFixed(2), labor: (0.6 * mult).toFixed(2), gas: '0.30', elec: '0.25', cons: '0.65', time: '~2.5 min' },
-    waterjet: { total: (5.8 * mult).toFixed(2), labor: (0.9 * mult).toFixed(2), gas: '1.10', elec: '0.30', cons: '0.60', time: '~7.5 min' },
-    plasma:   { total: (1.4 * mult).toFixed(2), labor: (0.35 * mult).toFixed(2), gas: '0.25', elec: '0.20', cons: '0.20', time: '~1.4 min' },
-    oxyfuel:  noOxy ? null : { total: (0.8 * mult).toFixed(2), labor: (0.3 * mult).toFixed(2), gas: '0.35', elec: '0.05', cons: '0.10', time: '~4.5 min' },
+  let sc = {
+    plasma_conv:  { q: 45, s: 92, c: 95, sc: 65 },
+    plasma_hidef: { q: 72, s: 88, c: 75, sc: 72 },
+    laser_low:    { q: 82, s: 72, c: 68, sc: 74 },
+    laser_high:   { q: 92, s: 85, c: 55, sc: 80 },
+    waterjet:     { q: 88, s: 42, c: 52, sc: 62 },
+    oxyfuel:      { q: 30, s: 28, c: 98, sc: 48 },
   }
 
-  const sorted = Object.entries(scores).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
-  return { scores, costs, sorted, noOxy }
+  if (isSpecialty) { sc.waterjet.sc += 25; sc.plasma_conv.sc -= 15; sc.plasma_hidef.sc -= 10 }
+  if (fin.includes('Fine')) { sc.laser_high.sc += 10; sc.waterjet.sc += 8; sc.plasma_conv.sc -= 20; sc.plasma_hidef.sc -= 10; sc.oxyfuel.sc -= 35 }
+  if (tol.includes('0.1') || tol.includes('0.05')) { sc.laser_high.sc += 12; sc.waterjet.sc += 10; sc.plasma_conv.sc -= 18; sc.oxyfuel.sc -= 30 }
+  if (haz?.includes('Very')) { sc.waterjet.sc += 22; sc.laser_high.sc -= 12; sc.plasma_conv.sc -= 22; sc.oxyfuel.sc -= 25 }
+  if (pri?.includes('Lowest')) { sc.oxyfuel.sc += 22; sc.plasma_conv.sc += 18; sc.laser_high.sc -= 8 }
+  if (pri?.includes('quality')) { sc.laser_high.sc += 15; sc.waterjet.sc += 10; sc.plasma_conv.sc -= 15 }
+  if (t > 20) { sc.plasma_hidef.sc += 12; sc.laser_low.sc -= 15; sc.oxyfuel.sc += 15 }
+  if (t > 50) { sc.oxyfuel.sc += 20; sc.waterjet.sc += 10; sc.laser_high.sc -= 10 }
+
+  // Apply availability
+  Object.keys(sc).forEach(key => {
+    if (!isTechAvailable(key, answers).available) {
+      sc[key] = { q: 0, s: 0, c: 0, sc: 0 }
+    }
+  })
+
+  const cl = v => Math.min(99, Math.max(0, Math.round(v)))
+  Object.keys(sc).forEach(k => { sc[k] = { q: cl(sc[k].q), s: cl(sc[k].s), c: cl(sc[k].c), sc: cl(sc[k].sc) } })
+
+  // Cost per part estimates
+  const wjMult = isSpecialty ? mult * 1.6 : mult
+  const spMult = isSpecialty ? mult * 1.2 : mult
+  const costs = {
+    plasma_conv:  { total: (1.2 * spMult).toFixed(2), labor: (0.3 * spMult).toFixed(2), gas: '0.20', elec: '0.15', cons: '0.15', time: '~1.2 min' },
+    plasma_hidef: { total: (1.8 * spMult).toFixed(2), labor: (0.4 * spMult).toFixed(2), gas: '0.28', elec: '0.22', cons: '0.30', time: '~1.5 min' },
+    laser_low:    { total: (2.5 * spMult).toFixed(2), labor: (0.5 * spMult).toFixed(2), gas: '0.25', elec: '0.20', cons: '0.55', time: '~2.2 min' },
+    laser_high:   { total: (3.8 * spMult).toFixed(2), labor: (0.7 * spMult).toFixed(2), gas: '0.32', elec: '0.28', cons: '0.70', time: '~1.8 min' },
+    waterjet:     { total: (5.5 * wjMult).toFixed(2), labor: (0.9 * wjMult).toFixed(2), gas: '1.20', elec: '0.32', cons: '0.65', time: '~7.0 min' },
+    oxyfuel:      isTechAvailable('oxyfuel', answers).available ? { total: (0.7 * mult).toFixed(2), labor: (0.25 * mult).toFixed(2), gas: '0.30', elec: '0.04', cons: '0.08', time: '~4.0 min' } : null,
+  }
+
+  const sorted = Object.entries(sc).filter(([, v]) => v.sc > 0).sort((a, b) => b[1].sc - a[1].sc)
+  return { sc, costs, sorted }
 }
 
 export default function CutReport({ answers, units, onRestart }) {
@@ -40,19 +87,16 @@ export default function CutReport({ answers, units, onRestart }) {
 
   const t = parseFloat(answers.thickness) || 8
   const thickStr = units === 'imperial' ? `${(t / 25.4).toFixed(2)} in` : `${t}mm`
-  const { costs, sorted, noOxy } = scoreReport(answers)
+  const { sc, costs, sorted } = scoreReport(answers)
   const winner = sorted[0]
-  const winnerName = NAMES[winner[0]]
+  const winnerName = TECHS[winner[0]].label
   const winnerCost = costs[winner[0]]
-  const cols = noOxy ? 3 : 4
 
   async function submitFeedback() {
     try {
       await supabase.from('feedback_submissions').insert([{
-        overall_score: fbScore,
-        comment: fbComment,
-        answers_payload: answers,
-        recommended_process: winner[0]
+        overall_score: fbScore, comment: fbComment,
+        answers_payload: answers, recommended_process: winner[0]
       }])
     } catch (e) {}
     setFbDone(true)
@@ -62,8 +106,13 @@ export default function CutReport({ answers, units, onRestart }) {
     <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #e8e8e8' }}>{txt}</div>
   )
 
+  const availableKeys = sorted.map(([k]) => k)
+  const unavailableKeys = Object.keys(TECHS).filter(k => !availableKeys.includes(k))
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+
+      {/* Sub-nav */}
       <div style={{ padding: '10px 24px', borderBottom: '1px solid #e8e8e8', background: '#f9f9f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ fontSize: 12, color: '#666' }}>Report · {answers.material || 'Mild steel'} · {thickStr}</div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -72,15 +121,15 @@ export default function CutReport({ answers, units, onRestart }) {
         </div>
       </div>
 
-      <div style={{ maxWidth: 820, width: '100%', margin: '0 auto', padding: '24px 20px 48px' }}>
+      <div style={{ maxWidth: 860, width: '100%', margin: '0 auto', padding: '24px 20px 48px' }}>
 
+        {/* Recommendation banner */}
         <div style={{ padding: '14px 18px', borderRadius: 12, border: '2px solid #85B7EB', background: '#E6F1FB', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 500, color: '#185FA5', letterSpacing: '0.5px', marginBottom: 3 }}>RECOMMENDED TECHNOLOGY</div>
             <div style={{ fontSize: 20, fontWeight: 500, color: '#0C447C', marginBottom: 4 }}>{winnerName}</div>
-            <div style={{ fontSize: 12, color: '#185FA5', lineHeight: 1.5, maxWidth: 480 }}>
-              For {answers.material || 'your material'} at {thickStr}, {winnerName.toLowerCase()} delivers the best balance of quality, speed, and cost.
-              {noOxy ? ' Note: oxyfuel is not compatible with this material.' : ''}
+            <div style={{ fontSize: 12, color: '#185FA5', lineHeight: 1.5, maxWidth: 500 }}>
+              For {answers.material || 'your material'} at {thickStr}, {winnerName.toLowerCase()} delivers the best balance of quality, speed, and cost for your requirements.
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -90,9 +139,67 @@ export default function CutReport({ answers, units, onRestart }) {
           </div>
         </div>
 
+        {/* Not applicable notice */}
+        {unavailableKeys.length > 0 && (
+          <div style={{ marginBottom: 16, padding: '8px 14px', borderRadius: 8, background: '#f9f9f9', border: '1px solid #e0e0e0', fontSize: 12, color: '#888', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: '#ccc', fontSize: 14 }}>⊘</span>
+            <span><strong style={{ color: '#666' }}>Not applicable for this job:</strong> {unavailableKeys.map(k => TECHS[k].label).join(', ')} — {unavailableKeys.map(k => isTechAvailable(k, answers).reason).filter((v,i,a) => a.indexOf(v) === i).join('; ')}</span>
+          </div>
+        )}
+
+        {/* Scorecard */}
+        <div style={{ marginBottom: 24 }}>
+          {secTitle('Side-by-side scorecard')}
+          <div style={{ border: '1px solid #e0e0e0', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: '9px 12px', background: '#f9f9f9', fontSize: 11, color: '#aaa', fontWeight: 500, textAlign: 'left', borderBottom: '1px solid #e0e0e0', width: 120 }}>Criterion</th>
+                  {sorted.map(([key], i) => (
+                    <th key={key} style={{ padding: '9px 10px', background: i === 0 ? '#E6F1FB' : '#f9f9f9', fontSize: 11, fontWeight: 500, color: i === 0 ? '#0C447C' : '#1a1a1a', borderBottom: '1px solid #e0e0e0', textAlign: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                        <div style={{ width: 6, height: 6, borderRadius: '50%', background: TECHS[key].color }} />
+                        {TECHS[key].short}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { label: 'Cut quality', vals: { plasma_conv: '⚡ Fair', plasma_hidef: '✓ Good', laser_low: '✓ Very good', laser_high: '★ Excellent', waterjet: '★ Excellent', oxyfuel: '✗ Rough' } },
+                  { label: 'Tolerance', vals: { plasma_conv: '±0.5mm', plasma_hidef: '±0.2mm', laser_low: '±0.15mm', laser_high: '±0.05mm', waterjet: '±0.1mm', oxyfuel: '±1.5mm' } },
+                  { label: 'Speed', vals: { plasma_conv: '⚡ Fastest', plasma_hidef: '⚡ Very fast', laser_low: '✓ Fast', laser_high: '✓ Fast', waterjet: '✗ Slow', oxyfuel: '✗ Slow' } },
+                  { label: 'Heat zone', vals: { plasma_conv: '✗ High', plasma_hidef: '⚡ Medium', laser_low: '⚡ Low', laser_high: '⚡ Low', waterjet: '★ None', oxyfuel: '✗ High' } },
+                  { label: 'Cost fit', vals: { plasma_conv: '★ Lowest', plasma_hidef: '✓ Low', laser_low: '✓ Medium', laser_high: '⚡ Higher', waterjet: '⚡ Higher', oxyfuel: '★ Lowest' } },
+                  { label: 'Thick plate', vals: { plasma_conv: '✓ Good', plasma_hidef: '★ Excellent', laser_low: '✗ Limited', laser_high: '⚡ Medium', waterjet: '★ Excellent', oxyfuel: '★ Best' } },
+                ].map(row => (
+                  <tr key={row.label}>
+                    <td style={{ padding: '8px 12px', fontSize: 12, color: '#666', borderBottom: '1px solid #f0f0f0' }}>{row.label}</td>
+                    {sorted.map(([key], i) => {
+                      const val = row.vals[key] || '—'
+                      const isGood = val.startsWith('★') || val.startsWith('✓')
+                      const isBad = val.startsWith('✗')
+                      const bg = i === 0 ? 'rgba(230,241,251,0.15)' : 'transparent'
+                      const pillBg = isGood ? '#E1F5EE' : isBad ? '#FCEBEB' : '#FAEEDA'
+                      const pillColor = isGood ? '#085041' : isBad ? '#791F1F' : '#633806'
+                      return (
+                        <td key={key} style={{ padding: '8px 10px', borderBottom: '1px solid #f0f0f0', background: bg, textAlign: 'center' }}>
+                          <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: pillBg, color: pillColor, fontWeight: 500, whiteSpace: 'nowrap' }}>{val}</span>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Cost breakdown */}
         <div style={{ marginBottom: 24 }}>
           {secTitle('Cost per part — breakdown')}
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))`, gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(sorted.length, 3)}, minmax(0,1fr))`, gap: 10 }}>
             {sorted.map(([key]) => {
               const d = costs[key]
               if (!d) return null
@@ -101,42 +208,76 @@ export default function CutReport({ answers, units, onRestart }) {
               return (
                 <div key={key} style={{ border: isWin ? '2px solid #85B7EB' : '1px solid #e0e0e0', borderRadius: 12, overflow: 'hidden' }}>
                   <div style={{ padding: '9px 13px', background: isWin ? '#E6F1FB' : '#f9f9f9', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 12, fontWeight: 500, color: isWin ? '#0C447C' : '#1a1a1a' }}>{NAMES[key]}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: TECHS[key].color }} />
+                      <span style={{ fontSize: 11, fontWeight: 500, color: isWin ? '#0C447C' : '#1a1a1a' }}>{TECHS[key].short}</span>
+                    </div>
                     <span style={{ fontSize: 15, fontWeight: 500, color: isWin ? '#0C447C' : '#1a1a1a' }}>${d.total}</span>
                   </div>
-                  {[['Labor', d.labor],[gasLabel, d.gas],['Electricity', d.elec],['Consumables', d.cons]].map(([l, v]) => (
-                    <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 13px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                  {[['Labor', d.labor],[gasLabel, d.gas],['Electricity', d.elec],['Consumables', d.cons],['Cycle time', d.time]].map(([l, v]) => (
+                    <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 13px', borderBottom: '1px solid #f0f0f0', fontSize: 11 }}>
                       <span style={{ color: '#666' }}>{l}</span>
-                      <span style={{ fontWeight: 500 }}>${v}</span>
+                      <span style={{ fontWeight: 500 }}>{l === 'Cycle time' ? v : `$${v}`}</span>
                     </div>
                   ))}
                 </div>
               )
             })}
           </div>
+
+          {sorted.length > 3 && (
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${sorted.length - 3}, minmax(0,1fr))`, gap: 10, marginTop: 10 }}>
+              {sorted.slice(3).map(([key]) => {
+                const d = costs[key]
+                if (!d) return null
+                const isWin = key === winner[0]
+                const gasLabel = key === 'waterjet' ? 'Abrasive' : key === 'oxyfuel' ? 'O₂ + fuel' : 'Gas'
+                return (
+                  <div key={key} style={{ border: isWin ? '2px solid #85B7EB' : '1px solid #e0e0e0', borderRadius: 12, overflow: 'hidden' }}>
+                    <div style={{ padding: '9px 13px', background: isWin ? '#E6F1FB' : '#f9f9f9', borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ width: 6, height: 6, borderRadius: '50%', background: TECHS[key].color }} />
+                        <span style={{ fontSize: 11, fontWeight: 500, color: isWin ? '#0C447C' : '#1a1a1a' }}>{TECHS[key].short}</span>
+                      </div>
+                      <span style={{ fontSize: 15, fontWeight: 500, color: isWin ? '#0C447C' : '#1a1a1a' }}>${d.total}</span>
+                    </div>
+                    {[['Labor', d.labor],[gasLabel, d.gas],['Electricity', d.elec],['Consumables', d.cons],['Cycle time', d.time]].map(([l, v]) => (
+                      <div key={l} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 13px', borderBottom: '1px solid #f0f0f0', fontSize: 11 }}>
+                        <span style={{ color: '#666' }}>{l}</span>
+                        <span style={{ fontWeight: 500 }}>{l === 'Cycle time' ? v : `$${v}`}</span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
+        {/* Score bars */}
         <div style={{ marginBottom: 24 }}>
-          {secTitle('Time estimates per part')}
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))`, gap: 10 }}>
-            {sorted.map(([key], i) => {
-              const d = costs[key]
-              if (!d) return null
-              const isWin = key === winner[0]
-              const pct = [40, 80, 22, 60][i] || 40
-              return (
-                <div key={key} style={{ border: isWin ? '2px solid #85B7EB' : '1px solid #e0e0e0', borderRadius: 12, padding: '11px 13px', background: isWin ? 'rgba(230,241,251,0.15)' : '#fff' }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, color: isWin ? '#0C447C' : '#1a1a1a' }}>{NAMES[key]}</div>
-                  <div style={{ height: 5, background: '#e0e0e0', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
-                    <div style={{ height: '100%', borderRadius: 3, background: COLORS[key], width: `${pct}%` }} />
-                  </div>
-                  <div style={{ fontSize: 12, color: '#666' }}>{d.time} / part</div>
+          {secTitle('Quality · Speed · Cost comparison')}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {[['Quality', 'q'], ['Speed', 's'], ['Cost fit', 'c']].map(([label, key]) => (
+              <div key={label}>
+                <div style={{ fontSize: 12, color: '#666', marginBottom: 6, fontWeight: 500 }}>{label}</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {sorted.map(([tech, s]) => (
+                    <div key={tech} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ width: 90, fontSize: 11, color: '#888', flexShrink: 0, textAlign: 'right' }}>{TECHS[tech].short}</div>
+                      <div style={{ flex: 1, height: 10, background: '#f0f0f0', borderRadius: 5, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', borderRadius: 5, background: TECHS[tech].color, width: `${s[key]}%`, transition: 'width 0.6s cubic-bezier(0.4,0,0.2,1)' }} />
+                      </div>
+                      <div style={{ width: 28, fontSize: 11, color: '#aaa' }}>{s[key]}</div>
+                    </div>
+                  ))}
                 </div>
-              )
-            })}
+              </div>
+            ))}
           </div>
         </div>
 
+        {/* Feedback */}
         <div style={{ border: '1px solid #e0e0e0', borderRadius: 12, overflow: 'hidden' }}>
           <div onClick={() => setFbOpen(o => !o)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', cursor: 'pointer' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

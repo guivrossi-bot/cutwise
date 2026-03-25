@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
 const STEPS = [
@@ -49,56 +49,285 @@ const STEPS = [
   { id: 'email', title: 'Where should we send your report?', sub: 'Emailed to you instantly.', special: 'email' }
 ]
 
-const TECH_NAMES = { laser: 'Fiber laser', waterjet: 'Waterjet', plasma: 'Plasma', oxyfuel: 'Oxyfuel' }
-const TECH_COLORS = { laser: '#378ADD', waterjet: '#1D9E75', plasma: '#EF9F27', oxyfuel: '#D85A30' }
+// ── Technology definitions ────────────────────────────────────────────────────
+const TECHS = {
+  plasma_conv:  { label: 'Plasma (Conventional)', short: 'Plasma Conv.', color: '#EF9F27', group: 'plasma' },
+  plasma_hidef: { label: 'Plasma (High Definition)', short: 'Plasma HiDef', color: '#BA7517', group: 'plasma' },
+  laser_low:    { label: 'Laser (Low End)', short: 'Laser Low', color: '#85B7EB', group: 'laser' },
+  laser_high:   { label: 'Laser (High End)', short: 'Laser High', color: '#185FA5', group: 'laser' },
+  waterjet:     { label: 'Waterjet', short: 'Waterjet', color: '#1D9E75', group: 'waterjet' },
+  oxyfuel:      { label: 'Oxyfuel', short: 'Oxyfuel', color: '#D85A30', group: 'oxyfuel' },
+}
+
+// ── Thickness caps from manufacturer data ─────────────────────────────────────
+// Laser: 3kW→25mm, 6kW→25mm, 12kW→30mm, 20kW→40mm (low end ≈ 6kW cap, high end ≈ 20kW cap)
+// Plasma conv (Powermax/MAXPRO): up to ~50mm
+// Plasma HiDef (XPR/HPR): up to ~80mm
+// Waterjet: up to ~300mm (practical)
+// Oxyfuel: mild steel only, up to ~400mm
+const THICKNESS_CAPS = {
+  plasma_conv:  50,
+  plasma_hidef: 80,
+  laser_low:    25,
+  laser_high:   40,
+  waterjet:     300,
+  oxyfuel:      400,
+}
+
+// ── Material restrictions ─────────────────────────────────────────────────────
+// Oxyfuel: ONLY mild steel
+// Specialty materials (not MS/SS/Al): waterjet preferred, others possible
+const SPECIALTY_MATERIALS = ['Copper', 'Titanium', 'Other']
+const OXYFUEL_MATERIALS = ['Mild steel'] // oxyfuel only works on mild steel
+
+function isTechAvailable(techKey, answers) {
+  const mat = answers.material || ''
+  const t = parseFloat(answers.thickness) || 0
+
+  // Oxyfuel: only mild steel
+  if (techKey === 'oxyfuel') {
+    if (!mat.includes('Mild steel')) return { available: false, reason: 'Oxyfuel only cuts mild steel' }
+  }
+
+  // Thickness cap check
+  if (t > 0 && t > THICKNESS_CAPS[techKey]) {
+    return { available: false, reason: `Max ${THICKNESS_CAPS[techKey]}mm for this process` }
+  }
+
+  return { available: true, reason: null }
+}
 
 function score(answers) {
   const t = parseFloat(answers.thickness) || 0
-  const fin = answers.finish || '', tol = answers.tolerance || ''
-  const haz = answers.haz || '', pri = answers.priority || '', m = answers.material || ''
-  let L = { q: 80, s: 75, c: 70, sc: 75 }
-  let W = { q: 75, s: 45, c: 55, sc: 58 }
-  let P = { q: 50, s: 90, c: 85, sc: 65 }
-  let O = { q: 35, s: 30, c: 95, sc: 50 }
-  if (t > 25) { O.sc += 20; L.sc -= 10 }
-  if (t > 50) { O.sc += 15; L.sc -= 20 }
-  if (fin.includes('Fine')) { L.q += 10; W.q += 8; P.q -= 20; O.q -= 30 }
-  if (tol.includes('0.1') || tol.includes('0.05')) { L.sc += 10; W.sc += 8; P.sc -= 15; O.sc -= 25 }
-  if (haz.includes('Very')) { W.sc += 15; L.sc -= 10; O.sc -= 15 }
-  if (pri.includes('Lowest')) { O.sc += 20; P.sc += 15; L.sc -= 5 }
-  if (pri.includes('quality')) { L.sc += 12; P.sc -= 10; O.sc -= 15 }
-  if (pri.includes('heat')) { W.sc += 20; L.sc -= 15; P.sc -= 20; O.sc -= 20 }
-  if (['Aluminum', 'Stainless', 'Copper', 'Titanium'].some(x => m.includes(x))) {
-    O.sc = Math.max(O.sc - 40, 5)
+  const fin = answers.finish || ''
+  const tol = answers.tolerance || ''
+  const haz = answers.haz || ''
+  const pri = answers.priority || ''
+  const mat = answers.material || ''
+  const isSpecialty = SPECIALTY_MATERIALS.some(m => mat.includes(m))
+  const geo = answers.geometry || ''
+  const qty = answers.quantity || ''
+
+  // Base scores: quality, speed, cost, overall
+  let scores = {
+    plasma_conv:  { q: 45, s: 92, c: 95, sc: 65 },
+    plasma_hidef: { q: 72, s: 88, c: 75, sc: 72 },
+    laser_low:    { q: 82, s: 72, c: 68, sc: 74 },
+    laser_high:   { q: 92, s: 85, c: 55, sc: 80 },
+    waterjet:     { q: 88, s: 42, c: 52, sc: 62 },
+    oxyfuel:      { q: 30, s: 28, c: 98, sc: 48 },
   }
-  const cl = v => Math.min(99, Math.max(5, Math.round(v)))
-  return {
-    laser: { q: cl(L.q), s: cl(L.s), c: cl(L.c), sc: cl(L.sc) },
-    waterjet: { q: cl(W.q), s: cl(W.s), c: cl(W.c), sc: cl(W.sc) },
-    plasma: { q: cl(P.q), s: cl(P.s), c: cl(P.c), sc: cl(P.sc) },
-    oxyfuel: { q: cl(O.q), s: cl(O.s), c: cl(O.c), sc: cl(O.sc) }
+
+  // ── Material adjustments ───────────────────────────────────────────────────
+  if (isSpecialty) {
+    scores.waterjet.sc += 25
+    scores.waterjet.q  += 10
+    scores.plasma_conv.sc  -= 15
+    scores.plasma_hidef.sc -= 10
+    scores.oxyfuel.sc = 0
   }
+  if (mat.includes('Stainless')) {
+    scores.laser_high.sc += 8
+    scores.laser_low.sc  += 5
+    scores.plasma_conv.q -= 10
+  }
+  if (mat.includes('Aluminum')) {
+    scores.laser_high.sc += 10
+    scores.laser_low.sc  += 8
+    scores.plasma_conv.sc -= 5
+  }
+
+  // ── Thickness adjustments ─────────────────────────────────────────────────
+  if (t > 20) {
+    scores.plasma_hidef.sc += 12
+    scores.plasma_conv.sc  += 8
+    scores.laser_high.sc   -= 5
+    scores.laser_low.sc    -= 15
+    scores.oxyfuel.sc      += 15
+  }
+  if (t > 40) {
+    scores.plasma_hidef.sc += 10
+    scores.oxyfuel.sc      += 20
+    scores.laser_high.sc   -= 10
+    scores.laser_low.sc    -= 20
+  }
+  if (t > 80) {
+    scores.oxyfuel.sc      += 15
+    scores.waterjet.sc     += 10
+  }
+  if (t <= 6) {
+    scores.laser_high.sc   += 15
+    scores.laser_low.sc    += 12
+    scores.plasma_conv.sc  -= 10
+    scores.oxyfuel.sc      -= 20
+  }
+
+  // ── Finish / tolerance adjustments ────────────────────────────────────────
+  if (fin.includes('Fine')) {
+    scores.laser_high.q  += 8
+    scores.laser_low.q   += 5
+    scores.waterjet.q    += 6
+    scores.plasma_conv.q -= 25
+    scores.plasma_hidef.q -= 12
+    scores.oxyfuel.q     -= 35
+    scores.laser_high.sc += 10
+    scores.waterjet.sc   += 8
+    scores.plasma_conv.sc -= 20
+  }
+  if (tol.includes('0.1') || tol.includes('0.05')) {
+    scores.laser_high.sc += 12
+    scores.waterjet.sc   += 10
+    scores.laser_low.sc  += 6
+    scores.plasma_conv.sc -= 18
+    scores.plasma_hidef.sc -= 8
+    scores.oxyfuel.sc    -= 30
+  }
+
+  // ── Heat sensitivity ──────────────────────────────────────────────────────
+  if (haz.includes('Very')) {
+    scores.waterjet.sc    += 22
+    scores.laser_high.sc  -= 12
+    scores.laser_low.sc   -= 10
+    scores.plasma_conv.sc -= 22
+    scores.plasma_hidef.sc -= 15
+    scores.oxyfuel.sc     -= 25
+  }
+  if (haz.includes('Somewhat')) {
+    scores.waterjet.sc   += 8
+    scores.plasma_conv.sc -= 8
+    scores.oxyfuel.sc    -= 12
+  }
+
+  // ── Priority adjustments ──────────────────────────────────────────────────
+  if (pri.includes('Lowest')) {
+    scores.oxyfuel.sc      += 22
+    scores.plasma_conv.sc  += 18
+    scores.plasma_hidef.sc += 8
+    scores.laser_high.sc   -= 8
+    scores.laser_low.sc    += 5
+  }
+  if (pri.includes('quality')) {
+    scores.laser_high.sc  += 15
+    scores.waterjet.sc    += 10
+    scores.laser_low.sc   += 8
+    scores.plasma_conv.sc -= 15
+    scores.oxyfuel.sc     -= 20
+  }
+  if (pri.includes('heat')) {
+    scores.waterjet.sc    += 25
+    scores.laser_high.sc  -= 15
+    scores.laser_low.sc   -= 12
+    scores.plasma_conv.sc -= 25
+    scores.plasma_hidef.sc -= 18
+    scores.oxyfuel.sc     -= 28
+  }
+  if (pri.includes('Fastest')) {
+    scores.plasma_conv.sc  += 18
+    scores.plasma_hidef.sc += 15
+    scores.laser_high.sc   += 10
+    scores.laser_low.sc    += 8
+    scores.waterjet.sc     -= 15
+    scores.oxyfuel.sc      -= 10
+  }
+
+  // ── Geometry ──────────────────────────────────────────────────────────────
+  if (geo.includes('Complex') || geo.includes('Holes')) {
+    scores.laser_high.sc  += 10
+    scores.laser_low.sc   += 8
+    scores.waterjet.sc    += 8
+    scores.plasma_conv.sc -= 12
+    scores.oxyfuel.sc     -= 25
+  }
+
+  // ── Volume ────────────────────────────────────────────────────────────────
+  if (qty.includes('500+')) {
+    scores.plasma_conv.sc  += 10
+    scores.plasma_hidef.sc += 8
+    scores.laser_high.sc   += 12
+  }
+  if (qty.includes('1–5')) {
+    scores.waterjet.sc += 8
+    scores.oxyfuel.sc  += 5
+  }
+
+  // ── Apply availability caps ───────────────────────────────────────────────
+  Object.keys(scores).forEach(key => {
+    const avail = isTechAvailable(key, answers)
+    if (!avail.available) {
+      scores[key].sc = 0
+      scores[key].q  = 0
+      scores[key].s  = 0
+      scores[key].c  = 0
+    }
+  })
+
+  const cl = v => Math.min(99, Math.max(0, Math.round(v)))
+  const result = {}
+  Object.keys(scores).forEach(k => {
+    result[k] = { q: cl(scores[k].q), s: cl(scores[k].s), c: cl(scores[k].c), sc: cl(scores[k].sc) }
+  })
+  return result
 }
 
 function costRange(key, answers) {
-  const base = { laser: [2, 8], waterjet: [4, 14], plasma: [1, 5], oxyfuel: [0.5, 3] }
+  // Base $/part ranges from manufacturer data
+  const base = {
+    plasma_conv:  [0.8, 4],
+    plasma_hidef: [1.5, 6],
+    laser_low:    [2, 7],
+    laser_high:   [3, 10],
+    waterjet:     [4, 14],
+    oxyfuel:      [0.4, 2.5],
+  }
   const r = base[key]
   const t = parseFloat(answers.thickness) || 5
-  const mult = t > 30 ? 2.2 : t > 15 ? 1.5 : 1
+  const isSpecialty = SPECIALTY_MATERIALS.some(m => (answers.material||'').includes(m))
+  let mult = t > 50 ? 3.5 : t > 30 ? 2.2 : t > 15 ? 1.5 : 1
+  if (isSpecialty && key === 'waterjet') mult *= 1.6
+  if (isSpecialty && key !== 'waterjet') mult *= 1.2
   return `$${(r[0] * mult).toFixed(1)}–$${(r[1] * mult).toFixed(1)}`
+}
+
+// ── Animated bar component ────────────────────────────────────────────────────
+function AnimatedBar({ value, color, prevValue }) {
+  const [width, setWidth] = useState(prevValue || 0)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setWidth(value), 50)
+    return () => clearTimeout(timer)
+  }, [value])
+
+  return (
+    <div style={{ flex: 1, height: 4, background: '#e0e0e0', borderRadius: 2, overflow: 'hidden' }}>
+      <div style={{
+        height: '100%', borderRadius: 2, background: color,
+        width: `${width}%`,
+        transition: 'width 0.6s cubic-bezier(0.4, 0, 0.2, 1)'
+      }} />
+    </div>
+  )
 }
 
 export default function Wizard({ units, onComplete }) {
   const [answers, setAnswers] = useState({})
   const [current, setCurrent] = useState(0)
   const [submitted, setSubmitted] = useState(false)
+  const prevScores = useRef({})
 
   const step = STEPS[current]
   const filled = Object.keys(answers).filter(k => answers[k]).length
   const sc = score(answers)
-  const sorted = Object.entries(sc).sort((a, b) => b[1].sc - a[1].sc)
+
+  // Sort: available first by sc desc, then unavailable
+  const sorted = Object.entries(sc).sort((a, b) => {
+    if (a[1].sc === 0 && b[1].sc === 0) return 0
+    if (a[1].sc === 0) return 1
+    if (b[1].sc === 0) return -1
+    return b[1].sc - a[1].sc
+  })
 
   function pick(id, val) {
+    prevScores.current = { ...sc }
     setAnswers(prev => ({ ...prev, [id]: val }))
   }
 
@@ -129,6 +358,7 @@ export default function Wizard({ units, onComplete }) {
   return (
     <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', minHeight: 'calc(100vh - 52px)' }}>
 
+      {/* ── LEFT: wizard ── */}
       <div style={{ borderRight: '1px solid #e8e8e8', display: 'flex', flexDirection: 'column' }}>
         <div style={{ display: 'flex', gap: 3, padding: '10px 20px', borderBottom: '1px solid #e8e8e8' }}>
           {STEPS.map((_, i) => (
@@ -211,8 +441,9 @@ export default function Wizard({ units, onComplete }) {
         </div>
       </div>
 
-      <div style={{ background: '#f9f9f9', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '12px 18px', borderBottom: '1px solid #e8e8e8', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      {/* ── RIGHT: live comparison ── */}
+      <div style={{ background: '#f9f9f9', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+        <div style={{ padding: '12px 18px', borderBottom: '1px solid #e8e8e8', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, background: '#f9f9f9', zIndex: 2 }}>
           <div style={{ fontSize: 13, fontWeight: 500 }}>Live comparison</div>
           <div style={{
             fontSize: 11, padding: '2px 8px', borderRadius: 10,
@@ -223,25 +454,56 @@ export default function Wizard({ units, onComplete }) {
           </div>
         </div>
 
-        {sorted.map(([key, s], i) => (
-          <div key={key} style={{ padding: '12px 18px', borderBottom: '1px solid #e8e8e8', background: i === 0 && filled > 1 ? '#fff' : 'transparent' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 500 }}>{TECH_NAMES[key]}</span>
-                {i === 0 && filled > 1 && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: '#E6F1FB', color: '#0C447C' }}>Leading</span>}
-              </div>
-              <span style={{ fontSize: 12, color: '#666' }}>{filled > 0 ? costRange(key, answers) + ' / part' : '—'}</span>
-            </div>
-            {[['Quality', s.q], ['Speed', s.s], ['Cost fit', s.c]].map(([label, val]) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                <span style={{ fontSize: 11, color: '#aaa', width: 60, flexShrink: 0 }}>{label}</span>
-                <div style={{ flex: 1, height: 4, background: '#e0e0e0', borderRadius: 2, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', borderRadius: 2, background: TECH_COLORS[key], width: `${val}%`, transition: 'width 0.5s' }} />
+        {sorted.map(([key, s], i) => {
+          const avail = isTechAvailable(key, answers)
+          const isLeading = i === 0 && avail.available && filled > 1
+          const prev = prevScores.current[key] || {}
+
+          return (
+            <div key={key} style={{
+              padding: '11px 18px',
+              borderBottom: '1px solid #e8e8e8',
+              background: isLeading ? '#fff' : 'transparent',
+              opacity: avail.available ? 1 : 0.35,
+              transition: 'opacity 0.4s, background 0.3s'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: avail.available ? TECHS[key].color : '#ccc', flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 500, color: avail.available ? '#1a1a1a' : '#aaa' }}>{TECHS[key].label}</span>
+                  {isLeading && <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 10, background: '#E6F1FB', color: '#0C447C' }}>Leading</span>}
+                  {!avail.available && <span style={{ fontSize: 10, padding: '1px 7px', borderRadius: 10, background: '#f0f0f0', color: '#aaa' }}>Not applicable</span>}
                 </div>
+                <span style={{ fontSize: 11, color: avail.available && filled > 0 ? '#666' : '#ccc' }}>
+                  {avail.available && filled > 0 ? costRange(key, answers) + ' / part' : avail.available ? '—' : avail.reason}
+                </span>
               </div>
-            ))}
+
+              {avail.available ? (
+                [['Quality', s.q, prev.q], ['Speed', s.s, prev.s], ['Cost fit', s.c, prev.c]].map(([label, val, pval]) => (
+                  <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, color: '#aaa', width: 56, flexShrink: 0 }}>{label}</span>
+                    <AnimatedBar value={val} color={TECHS[key].color} prevValue={pval} />
+                    <span style={{ fontSize: 10, color: '#aaa', width: 28, textAlign: 'right' }}>{val}</span>
+                  </div>
+                ))
+              ) : (
+                <div style={{ fontSize: 11, color: '#bbb', fontStyle: 'italic', marginTop: 2 }}>{avail.reason}</div>
+              )}
+            </div>
+          )
+        })}
+
+        {filled >= 2 && sorted[0] && isTechAvailable(sorted[0][0], answers).available && (
+          <div style={{ margin: '10px 14px', padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid #e0e0e0', borderLeft: '3px solid #378ADD' }}>
+            <p style={{ fontSize: 12, color: '#666', lineHeight: 1.6 }}>
+              <strong style={{ color: '#1a1a1a' }}>Signal:</strong> For {answers.material || 'your material'}{answers.thickness ? ` at ${answers.thickness}mm` : ''}, <strong style={{ color: '#1a1a1a' }}>{TECHS[sorted[0][0]].label}</strong> is currently leading.
+              {answers.haz?.includes('Very') ? ' Waterjet advantage: zero heat-affected zone.' : ''}
+              {answers.material && SPECIALTY_MATERIALS.some(m => answers.material.includes(m)) ? ' Waterjet preferred for specialty materials.' : ''}
+              {answers.material?.includes('Mild steel') && parseFloat(answers.thickness) > 50 ? ' Oxyfuel is highly competitive at this thickness.' : ''}
+            </p>
           </div>
-        ))}
+        )}
       </div>
     </div>
   )
