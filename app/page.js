@@ -44,8 +44,8 @@ export default function Home() {
       </nav>
 
       {screen === 'hero' && <Hero onStart={() => setScreen('wizard')} onSample={() => setScreen('report')} />}
-      {screen === 'wizard' && <Wizard units={units} onComplete={(a) => { setAnswers(a); setScreen('report') }} />}
-      {screen === 'report' && <Report answers={answers} units={units} onRestart={() => { setAnswers({}); setScreen('wizard') }} />}
+      {screen === 'wizard' && <Wizard key={units} units={units} onComplete={(a) => { setAnswers(a); setScreen('report') }} />}
+      {screen === 'report' && <Report key={units} answers={answers} units={units} onRestart={() => { setAnswers({}); setScreen('wizard') }} />}
     </div>
   )
 }
